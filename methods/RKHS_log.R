@@ -9,10 +9,8 @@ library(nloptr)
 # Experimental: for each level of X, the proportions and mean(Y) within the level
 # Control: Summary statistics of X and mean(Y)
 # Centers of Gaussian kernels: grid_points,
-# Regularization: L, the upper-bound on RKHS norm square of log w
+# Regularization: L, the upper-bound on RKHS norm of log w
 # Regularization: sigm, the standard deviation used in Gaussian kernel
-# Function to compute theta_min and wts_min with (log w - 1)' Σ^{-1} (log w - 1) <= L
-# Signature and returned fields mirror the original.
 find_theta_min_table_rkhs_log <- function(categorized, control_moments, control_mean, L, sigm) {
   # ---- Prep & ordering ----
   sample_space <- categorized$X
@@ -38,7 +36,7 @@ find_theta_min_table_rkhs_log <- function(categorized, control_moments, control_
   Kinv <- solve(Sigma + diag(lambda, K))
 
   # ---- Reparam: u = log w - 1  ==>  w = exp(u + 1)
-  # This ensures w > 0 and makes the inequality constraint simply u' Kinv u <= L.
+  # This ensures w > 0 and makes the inequality constraint simply u' Kinv u <= L^2.
   to_w <- function(u) exp(u + 1.0)
 
   # ---- Objective: minimize sum(cvec * w) with w = exp(u+1) ----
@@ -65,9 +63,9 @@ find_theta_min_table_rkhs_log <- function(categorized, control_moments, control_
     Amat %*% diag(w, nrow = K, ncol = K)
   }
 
-  # ---- Inequality constraint: g_ineq(u) = u' Kinv u - L <= 0 ----
+  # ---- Inequality constraint: g_ineq(u) = u' Kinv u - L^2 <= 0 ----
   eval_g_ineq <- function(u) {
-    as.numeric(t(u) %*% Kinv %*% u - L)
+    as.numeric(t(u) %*% Kinv %*% u - L^2)
   }
   eval_jac_g_ineq <- function(u) {
     # 1 x K row
@@ -81,7 +79,7 @@ find_theta_min_table_rkhs_log <- function(categorized, control_moments, control_
   ub <- rep( max_abs_u, K)
 
   # ---- Solve with SLSQP on u ----
-  # Start at u = 0 (i.e., w = exp(1)), which satisfies the inequality (u=0 ⇒ u'Kinv u = 0 <= L)
+  # Start at u = 0 (i.e., w = exp(1)), which satisfies the inequality (u=0 ⇒ u'Kinv u = 0 <= L^2)
   x0 <- rep(0, K)
   opts <- list(algorithm  = "NLOPT_LD_SLSQP",
                xtol_rel   = 1e-8,
@@ -130,6 +128,7 @@ find_theta_min_table_rkhs_log <- function(categorized, control_moments, control_
   is_valid_solution <- is.list(res) && !is.null(res$status) && (as.numeric(res$status) %in% 3:4)
 
   if (!is_valid_solution) {
+    print("Failure.")
     message("nloptr did not report success. Status: ", if (!is.null(res$status)) res$status,
             " | Message: ", if (!is.null(res$message)) res$message)
   }

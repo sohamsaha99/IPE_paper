@@ -14,6 +14,8 @@ CORES    <- max(1, parallel::detectCores() - 1)
 
 L_LIP_GRID <- c(1, 2, 4, 8, 16)
 L_GAU_GRID <- c(8, 10, 12, 14, 16)
+L_RKHS_GRID <- c(4, 5, 6, 7, 8)
+L_RKHSLOG_GRID <- c(4, 5, 6, 7, 8)
 N1_GRID    <- c(200, 400, 800, 1600)
 
 # Optionally, define richer method params here:
@@ -24,6 +26,14 @@ make_lipschitz_params <- function(L) {
 
 make_gaussian_params <- function(L, gaussian_grid_points) {
   list(L_Gaussian = L, grid_points = gaussian_grid_points)
+}
+
+make_rkhs_params <- function(L, rkhs_sigma) {
+  list(L_RKHS = L, rkhs_sigma = rkhs_sigma)
+}
+
+make_rkhs_log_params <- function(L, rkhs_log_sigma) {
+  list(L_RKHS_log = L, rkhs_log_sigma = rkhs_log_sigma)
 }
 
 dir.create("results", showWarnings = FALSE, recursive = TRUE)
@@ -53,6 +63,40 @@ for (n1 in N1_GRID) {
     params <- make_gaussian_params(Lg, gaussian_grid_points = ppoints(50))
     cat(sprintf("Gaussian: n1=%d n0=%d L=%g\n", n1, n0, Lg))
     run_replicate(method   = "gaussian",
+                  n0       = n0,
+                  n1       = n1,
+                  scenario = SCENARIO,
+                  B        = B,
+                  cores    = CORES,
+                  params   = params)
+  }
+}
+
+# ---- run RKHS across the grid ----
+cat("=== Running RKHS ===\n")
+for (n1 in N1_GRID) {
+  n0 <- 100 * n1
+  for (Lr in L_RKHS_GRID) {
+    params <- make_rkhs_params(Lr, rkhs_sigma = 1 / 8)
+    cat(sprintf("RKHS: n1=%d n0=%d L=%g\n", n1, n0, Lr))
+    run_replicate(method   = "rkhs",
+                  n0       = n0,
+                  n1       = n1,
+                  scenario = SCENARIO,
+                  B        = B,
+                  cores    = CORES,
+                  params   = params)
+  }
+}
+
+# ---- run RKHS log across the grid ----
+cat("=== Running RKHS log ===\n")
+for (n1 in N1_GRID) {
+  n0 <- 100 * n1
+  for (Lrl in L_RKHSLOG_GRID) {
+    params <- make_rkhs_log_params(Lrl, rkhs_log_sigma = 1 / 8)
+    cat(sprintf("RKHS log: n1=%d n0=%d L=%g\n", n1, n0, Lrl))
+    run_replicate(method   = "rkhs_log",
                   n0       = n0,
                   n1       = n1,
                   scenario = SCENARIO,

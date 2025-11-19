@@ -9,7 +9,7 @@ library(nloptr)
 # Experimental: for each level of X, the proportions and mean(Y) within the level
 # Control: Summary statistics of X and mean(Y)
 # Centers of Gaussian kernels: grid_points,
-# Regularization: L, the upper-bound on RKHS norm square
+# Regularization: L, the upper-bound on RKHS norm
 # Regularization: sigm, the standard deviation used in Gaussian kernel
 find_theta_min_table_rkhs <- function(categorized, control_moments, control_mean, L, sigm) {
   # ---- Prep & ordering ----
@@ -57,7 +57,7 @@ find_theta_min_table_rkhs <- function(categorized, control_moments, control_mean
   # ---- Inequality constraint: g_ineq(w) = (w-1)' Kinv (w-1) - L <= 0 ----
   eval_g_ineq <- function(w) {
     z <- w - 1
-    as.numeric(t(z) %*% Kinv %*% z - L)
+    as.numeric(t(z) %*% Kinv %*% z - L^2)
   }
   eval_jac_g_ineq <- function(w) {
     z <- w - 1
