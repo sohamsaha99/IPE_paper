@@ -16,7 +16,7 @@ L_LIP_GRID <- c(1, 2, 4, 8, 16)
 L_GAU_GRID <- c(8, 10, 12, 14, 16)
 L_RKHS_GRID <- c(4, 5, 6, 7, 8)
 L_RKHSLOG_GRID <- c(4, 5, 6, 7, 8)
-N1_GRID    <- c(200, 400, 800, 1600)
+N1_GRID    <- c(100, 200, 400, 800, 1600)
 
 # Optionally, define richer method params here:
 # (You can add more fields as your estimators grow.)
@@ -77,7 +77,7 @@ cat("=== Running RKHS ===\n")
 for (n1 in N1_GRID) {
   n0 <- 100 * n1
   for (Lr in L_RKHS_GRID) {
-    params <- make_rkhs_params(Lr, rkhs_sigma = 1 / 8)
+    params <- make_rkhs_params(Lr, rkhs_sigma = 1 / 25)
     cat(sprintf("RKHS: n1=%d n0=%d L=%g\n", n1, n0, Lr))
     run_replicate(method   = "rkhs",
                   n0       = n0,
@@ -94,7 +94,7 @@ cat("=== Running RKHS log ===\n")
 for (n1 in N1_GRID) {
   n0 <- 100 * n1
   for (Lrl in L_RKHSLOG_GRID) {
-    params <- make_rkhs_log_params(Lrl, rkhs_log_sigma = 1 / 8)
+    params <- make_rkhs_log_params(Lrl, rkhs_log_sigma = 1 / 25)
     cat(sprintf("RKHS log: n1=%d n0=%d L=%g\n", n1, n0, Lrl))
     run_replicate(method   = "rkhs_log",
                   n0       = n0,

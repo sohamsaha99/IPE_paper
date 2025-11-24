@@ -15,7 +15,7 @@ normal_interval_probs <- function(mean, sd, grid = seq(0, 1.20, by = 0.01)) {
 
 # Function to generate data give scenario and sample sizes
 get_data <- function(n0, n1, scenario) {
-  stopifnot(scenario == 3)
+  stopifnot(scenario == 2)
   # Fix grid to make a discrete problem
   grid <- seq(0, 1.20, by = 0.01)
   # Generate treatment arm
@@ -47,7 +47,7 @@ get_data <- function(n0, n1, scenario) {
 
 # Function to generate necessary information of the population
 get_population <- function(scenario) {
-  stopifnot(scenario == 3)
+  stopifnot(scenario == 2)
   grid <- seq(0, 1.20, by = 0.01)
   p_trt <- normal_interval_probs(mean = 0.6, sd = 0.15, grid = grid)
   categorized <- data.frame(X = grid)

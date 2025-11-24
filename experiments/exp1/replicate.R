@@ -48,6 +48,7 @@ run_replicate <- function(method,
 
     population <- get_population(scenario = scenario)
     truth_obj  <- true_theta_min_lipschitz(population, L = L_Lipschitz)
+    if (!truth_obj$is_valid_solution) stop("Regularization is infeasible for population.")
     theta_true <- truth_obj$theta_min
 
     run_one_rep <- function() {
@@ -71,6 +72,7 @@ run_replicate <- function(method,
     )
 
     attr(results, "params") <- params
+    attr(results, "population_result") <- truth_obj
     outfile <- sprintf("results/lipschitz_scen%d_n1_%d_n0_%d_L_%g.rds",
                        scenario, n1, n0, L_Lipschitz)
     saveRDS(results, outfile)
@@ -92,6 +94,7 @@ run_replicate <- function(method,
     truth_obj  <- true_theta_min_gaussian(population,
                                           grid_points = gaussian_grid_points,
                                           L = L_Gaussian)
+    if (!truth_obj$is_valid_solution) stop("Regularization is infeasible for population.")
     theta_true <- truth_obj$theta_min
 
     run_one_rep <- function() {
@@ -118,6 +121,7 @@ run_replicate <- function(method,
     )
 
     attr(results, "params") <- params
+    attr(results, "population_result") <- truth_obj
     outfile <- sprintf("results/gaussian_scen%d_n1_%d_n0_%d_L_%g.rds",
                        scenario, n1, n0, L_Gaussian)
     saveRDS(results, outfile)
@@ -140,6 +144,7 @@ run_replicate <- function(method,
                                       L = L_RKHS,
                                       sigm = rkhs_sigma
     )
+    if (!truth_obj$is_valid_solution) stop("Regularization is infeasible for population.")
     theta_true <- truth_obj$theta_min
 
     run_one_rep <- function() {
@@ -167,6 +172,7 @@ run_replicate <- function(method,
     )
 
     attr(results, "params") <- params
+    attr(results, "population_result") <- truth_obj
     outfile <- sprintf("results/rkhs_scen%d_n1_%d_n0_%d_L_%g.rds",
                        scenario, n1, n0, L_RKHS)
     saveRDS(results, outfile)
@@ -189,6 +195,7 @@ run_replicate <- function(method,
                                           L = L_RKHS_log,
                                           sigm = rkhs_log_sigma
     )
+    if (!truth_obj$is_valid_solution) stop("Regularization is infeasible for population.")
     theta_true <- truth_obj$theta_min
 
     run_one_rep <- function() {
@@ -216,6 +223,7 @@ run_replicate <- function(method,
     )
 
     attr(results, "params") <- params
+    attr(results, "population_result") <- truth_obj
     outfile <- sprintf("results/rkhs_log_scen%d_n1_%d_n0_%d_L_%g.rds",
                        scenario, n1, n0, L_RKHS_log)
     saveRDS(results, outfile)
