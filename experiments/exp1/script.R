@@ -77,7 +77,7 @@ cat("=== Running RKHS ===\n")
 for (n1 in N1_GRID) {
   n0 <- 100 * n1
   for (Lr in L_RKHS_GRID) {
-    params <- make_rkhs_params(Lr, rkhs_sigma = 1 / 25)
+    params <- make_rkhs_params(Lr, rkhs_sigma = 1 / 10)
     cat(sprintf("RKHS: n1=%d n0=%d L=%g\n", n1, n0, Lr))
     run_replicate(method   = "rkhs",
                   n0       = n0,
@@ -94,7 +94,7 @@ cat("=== Running RKHS log ===\n")
 for (n1 in N1_GRID) {
   n0 <- 100 * n1
   for (Lrl in L_RKHSLOG_GRID) {
-    params <- make_rkhs_log_params(Lrl, rkhs_log_sigma = 1 / 25)
+    params <- make_rkhs_log_params(Lrl, rkhs_log_sigma = 1 / 5)
     cat(sprintf("RKHS log: n1=%d n0=%d L=%g\n", n1, n0, Lrl))
     run_replicate(method   = "rkhs_log",
                   n0       = n0,
