@@ -3,7 +3,7 @@
 # Driver that SOURCES replicate.R and calls run_replicate()
 # with explicit method parameters for each method.
 # Grids:
-#   n1 in {200, 400, 800, 1600}; n0 = 100 * n1
+#   n1 in {100, 200, 400, 800, 1600}; n0 = 100 * n1
 #   L_Lipschitz in L_LIP_GRID; L_Gaussian in L_GAU_GRID
 
 source("experiments/exp1/replicate.R", chdir = TRUE)  # defines run_replicate()

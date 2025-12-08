@@ -19,10 +19,10 @@ suppressPackageStartupMessages({
 must_exist <- function(path) {
   if (!dir.exists(path)) stop("Directory not found: ", path)
 }
-method_name <- "rkhs_log"
-L_name <- "L_RKHS_log"
-estimand_name <- "\\theta_{min}^{(ARK)}"
-estimator_name <- "\\hat{\\theta}_{min}^{(ARK)}"
+method_name <- "rkhs"
+L_name <- "L_RKHS"
+estimand_name <- "\\theta_{min}^{(RK)}"
+estimator_name <- "\\hat{\\theta}_{min}^{(RK)}"
 # ---- load all results ----
 must_exist("results")
 files <- list.files("results", pattern = "\\.rds$", full.names = TRUE)
