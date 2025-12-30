@@ -7,6 +7,7 @@ library(ggplot2)
 library(latex2exp)
 library(ggrepel)
 library(patchwork)
+library(svglite)
 library(numDeriv)
 set.seed(101)
 
@@ -121,10 +122,9 @@ find_theta <- function(h, categorized1, categorized2) {
   solve_lp(h, categorized1, categorized2)$theta_min
 }
 
-find_f0 <- function(h, categorized1, categorized2) {
+find_wts <- function(h, categorized1, categorized2) {
   result <- solve_lp(h, categorized1, categorized2)
-  prop <- (1 - h) * categorized1$proportion + h * categorized2$proportion
-  result$wts_min * prop
+  result$wts_min
 }
 
 ##### PART 2 #####
@@ -144,9 +144,8 @@ for (n1 in c(50, 100, 200, 400)) {
   theta_min_hat_cv  <- rep(NA, B)
   theta_min_hat_cv2 <- rep(NA, B)
   optimal_index_hat <- rep(NA, B)
-  wts_min_hat <- matrix(NA, nrow = B, ncol = length(sample_space))
-  f0_min_hat  <- matrix(NA, nrow = B, ncol = length(sample_space))
-  f0_min_dif  <- matrix(NA, nrow = B, ncol = length(sample_space))
+  w0_min_hat  <- matrix(NA, nrow = B, ncol = length(sample_space))
+  w0_min_dif  <- matrix(NA, nrow = B, ncol = length(sample_space))
 
   n1A <- round(n1 / 2)
   n1B <- n1 - n1A
@@ -177,11 +176,10 @@ for (n1 in c(50, 100, 200, 400)) {
       result                 <- solve_lp(0, summ_trt, summ_trt)
       theta_min_hat[b]       <- result$theta_min
       optimal_index_hat[b]   <- result$optimal_index
-      wts_min_hat[b, ]       <- result$wts_min
-      f0_min_hat[b, ]        <- result$wts_min * summ_trt$proportion
+      w0_min_hat[b, ]        <- result$wts_min
       # Compute a representative derivative
-      f0_min_dif[b, ]        <- jacobian(
-                                  find_f0, 0,
+      w0_min_dif[b, ]        <- jacobian(
+                                  find_wts, 0,
                                   method = "Richardson", side = +1,
                                   categorized1 = summ_trt, categorized2 = summ_deriv
                                   # categorized1 = summ_trt, categorized2 = population
@@ -247,9 +245,8 @@ for (n1 in c(50, 100, 200, 400)) {
   )
 
   for (i in seq_along(sample_space)) {
-    wts_df[, paste0("w",  i)] <- wts_min_hat[, i]
-    wts_df[, paste0("f0", i)] <- f0_min_hat[, i]
-    wts_df[, paste0("f0", i, "_deriv")] <- f0_min_dif[, i]
+    wts_df[, paste0("w0", i)] <- w0_min_hat[, i]
+    wts_df[, paste0("w0", i, "_deriv")] <- w0_min_dif[, i]
   }
 
   wts_df$n1 <- n1
@@ -267,11 +264,11 @@ results <- results %>%
          scaled_deriv     = sqrt(n1) * (theta_min_cv2 - theta_min_cv - theta_min_true)
   )
 
+dir.create("results/example/v3/", recursive = TRUE, showWarnings = FALSE)
+write.csv(results, "results/example/v3/results.csv", row.names = FALSE)
+results <- read.csv("results/example/v3/results.csv", header = TRUE)
 # Visualize results
 
-dir.create("results/example", recursive = TRUE, showWarnings = FALSE)
-
-write.csv(results, "results/example/results.csv", row.names = FALSE)
 results_long <- results %>%
   select(n1, scaled_error, scaled_error_cv, scaled_error_cv2) %>%
   pivot_longer(
@@ -283,7 +280,8 @@ results_long <- results %>%
                          levels = c("scaled_error",
                                     "scaled_error_cv",
                                     "scaled_error_cv2"),
-                         labels = c("Empirical", "DS", "DS + Deriv")))
+                         labels = c("Empirical", "DS       ", "DS + Deriv")))
+
 
 
 # ggplot(results) +
@@ -303,8 +301,10 @@ p1 <- ggplot(results_long, aes(x = factor(n1), y = value, fill = method)) +
   theme_mydefault(base_size = 20) +
   theme(legend.position = "top") +
   labs(
-    x = TeX(r"(Sample size $n_1$)"),
-    y = TeX(r"($\sqrt{n_1} \left( \hat{\theta}_{min} - \theta_{min} \right)$)"),
+    # x = TeX(r"(Sample size $n_1$)"),
+    x = "Sample size",
+    # y = TeX(r"($\sqrt{n_1} \left( \hat{\theta}_{min} - \theta_{min} \right)$)"),
+    y = "Scaled error",
     fill = "Estimator"
   )
 
@@ -331,99 +331,6 @@ results %>% group_by(n1) %>%
   print()
 
 ##### PART 3 #####
-# Visualize feasible sets
-feasible_set <- function(prop, prop_hat = NULL, res = 0.001) {
-  stopifnot(length(prop) == 3, abs(sum(prop) - 1) <= 1e-8)
-  if (!is.null(prop_hat)) {
-    stopifnot(length(prop_hat) == 3, abs(sum(prop_hat) - 1) <= 1e-8)
-  }
-
-  # Grid over q1 and q2
-  q1_vals <- seq(0, 1, by = res)
-  q2_vals <- seq(0, 1, by = res)
-  grid <- expand.grid(q1 = q1_vals, q2 = q2_vals)
-
-  # Compute q3 and simplex constraint
-  grid$q3 <- 1 - grid$q1 - grid$q2
-  simplex <- grid$q3 >= 0
-
-  centers <- 1:3
-  sd_gau <- 1
-
-  ## Compute A in a vectorized way
-  A <- outer(sample_space, centers,
-             function(x, m) dnorm(x, mean = m, sd = sd_gau))
-
-
-  # Helper to compute feasibility for a given prop
-  compute_feasible <- function(p) {
-    # Only compute inside simplex to avoid wasted work
-    idx <- which(simplex)
-
-    q1 <- grid$q1[idx]
-    q2 <- grid$q2[idx]
-    q3 <- grid$q3[idx]
-
-    w1 <- q1 / p[1]
-    w2 <- q2 / p[2]
-    w3 <- q3 / p[3]
-
-    # Right-hand sides as a 3 x N matrix
-    W <- rbind(w1, w2, w3)           # rows: i = 1,2,3; cols: grid points
-
-    # Solve A * alpha = W for all columns at once: alpha is 3 x N
-    alpha <- solve(A, W)
-
-    # Feasibility: all alphas >= 0
-    feas_alpha <- alpha[1, ] >= 0 & alpha[2, ] >= 0 & alpha[3, ] >= 0
-
-    # Put back into full-length logical vector
-    feasible <- rep(FALSE, nrow(grid))
-    feasible[idx] <- feas_alpha
-
-    feasible & simplex
-  }
-
-  feasible_true <- compute_feasible(prop)
-
-  # Base empty plot
-  p <- ggplot()
-
-  # True polytope: blue, semi-transparent
-  p <- p + geom_raster(
-                       data = subset(grid, feasible_true),
-                       aes(x = q1, y = q2),
-                       fill = "steelblue",
-                       alpha = 0.4
-  )
-
-  # Estimated polytope: orange, semi-transparent
-  if (!is.null(prop_hat)) {
-    feasible_hat <- compute_feasible(prop_hat)
-    p <- p + geom_raster(
-                         data = subset(grid, feasible_hat),
-                         aes(x = q1, y = q2),
-                         fill = "orange",
-                         alpha = 0.4
-    )
-  }
-
-  p +
-    coord_fixed() +
-    xlim(c(0, 1)) +
-    ylim(c(0, 1)) +
-    labs(
-         title = if (is.null(prop_hat)) {
-           "Feasible Set in (q1, q2) Space"
-         } else {
-           "True (blue) vs Estimated (orange) Feasible Sets"
-         },
-         x = expression(q[1] == w[1] * p[1]),
-         y = expression(q[2] == w[2] * p[2])
-         ) +
-    theme_mydefault(base_size = 20)
-}
-
 set.seed(111)
 compute_vertices_analytic <- function(prop,
                                       sample_space = 1:3,
@@ -446,12 +353,11 @@ compute_vertices_analytic <- function(prop,
     alpha_k <- 1 / a[k]
     # w_i = sum_k A[i,k] alpha_k = A[,k] * alpha_k (others 0)
     w <- A[, k] * alpha_k
-    q <- prop * w  # elementwise: q_i = p_i * w_i
 
     verts[[k]] <- data.frame(
-                             q1     = q[1],
-                             q2     = q[2],
-                             q3     = q[3],
+                             w1     = w[1],
+                             w2     = w[2],
+                             w3     = w[3],
                              vertex = k
     )
   }
@@ -460,6 +366,7 @@ compute_vertices_analytic <- function(prop,
 }
 verts_true <- compute_vertices_analytic(probabilities)
 # Store vertices across replicates
+B <- 800
 verts_dat <- map_dfr(
                      .x = seq_len(B),
                      .f = function(b) {
@@ -489,9 +396,9 @@ verts_opt <- results %>%
 
 # Take first 10 rows
 arrow_raw <- verts_opt %>%
-  filter(abs(f01_deriv) < 5, abs(f02_deriv) < 5, abs(f03_deriv) < 5) %>%
-  slice_head(n = 20) %>%
-  mutate(deriv_norm = sqrt(f01_deriv^2 + f02_deriv^2))
+  # filter(abs(w01_deriv) < 50, abs(w02_deriv) < 50, abs(w03_deriv) < 50) %>%
+  slice_tail(n = 20) %>%
+  mutate(deriv_norm = sqrt(w01_deriv^2 + w02_deriv^2))
 
 # # Scale derivatives so the longest arrow has a fixed length on the plot
 # max_len <- 0.10   # roughly 0.10 units in f-space; adjust if needed
@@ -500,124 +407,123 @@ scale_fac <- 1
 
 arrow_df <- arrow_raw %>%
   mutate(
-         xend = f01 + scale_fac * f01_deriv,
-         yend = f02 + scale_fac * f02_deriv
+         xend = w01 + scale_fac * w01_deriv,
+         yend = w02 + scale_fac * w02_deriv
   )
 
 # ---- Average arrow (over all rows with n1 == 200) ----
 avg_arrow_df <- verts_opt %>%
-  filter(abs(f01_deriv) < 5, abs(f02_deriv) < 5, abs(f03_deriv) < 5) %>%
+  filter(abs(w01_deriv) < 5, abs(w02_deriv) < 5, abs(w03_deriv) < 5) %>%
   group_by(optimal_index) %>%
   summarise(
-            f01       = mean(f01),
-            f02       = mean(f02),
-            f01_deriv = mean(f01_deriv),
-            f02_deriv = mean(f02_deriv)
+            w01       = mean(w01),
+            w02       = mean(w02),
+            w01_deriv = mean(w01_deriv),
+            w02_deriv = mean(w02_deriv)
             ) %>%
   mutate(
-         xend = f01 + scale_fac * f01_deriv,
-         yend = f02 + scale_fac * f02_deriv
+         xend = w01 + scale_fac * w01_deriv,
+         yend = w02 + scale_fac * w02_deriv
   )
 
 p2 <- ggplot() +
   # True polytope (triangle) boundary
   geom_polygon(
     data  = verts_true_plot,
-    aes(x = q1, y = q2, group = 1),
+    aes(x = w1, y = w2, group = 1),
     fill  = "orange",
     # color = "orange",
     linewidth = 1,
     alpha = 0.5
   ) +
+  # One representative \hat{W} polytope
   geom_polygon(
     data  = verts_dat %>% filter(rep == 1),
-    aes(x = q1, y = q2, group = 1),
+    aes(x = w1, y = w2, group = 1),
     fill  = "steelblue",
     color = "steelblue",
     linewidth = 0,
     alpha = 0.5
   ) +
-  # 2D density of estimated vertices across replicates
-  stat_density_2d(
+  # 2D scatter-plot of estimated vertices across replicates
+  geom_point(
     data = verts_dat,
-    aes(x = q1, y = q2, fill = after_stat(level), group = vertex),
-    geom  = "polygon",
-    alpha = 0.2,
-    fill = "steelblue2"
+    aes(x = w1, y = w2, group = vertex),
+    alpha = 0.1,
+    color = "steelblue2"
   ) +
   # Add mean of estimated vertices
-  geom_point(data = verts_dat %>% group_by(vertex) %>% summarise(q1 = mean(q1), q2 = mean(q2)),
-  aes(q1, q2), size = 1.5) +
-  geom_hline(yintercept = theta_min_true, color = "orange", linetype = "dashed") +
+  geom_point(data = verts_dat %>% group_by(vertex) %>% summarise(w1 = mean(w1), w2 = mean(w2)),
+  aes(w1, w2), size = 3.5) +
+  geom_hline(yintercept = theta_min_true / probabilities[2], color = "orange", linetype = "dashed") +
   coord_fixed() +
   labs(
-    title = TeX(r"(True polytope $Q$ (orange), one estimated polytope $\hat{Q}$ (blue) and distribution of estimated vertices)"),
-    x     = expression(f(1)),
-    y     = expression(f(2))
+    # title = TeX(r"(True polytope $W$ (orange), one estimated polytope $\hat{W}$ (blue) and distribution of estimated vertices)"),
+    x     = expression(w(1)),
+    y     = expression(w(2))
   ) +
   guides(fill = "none", color = "none") +
   theme_mydefault(base_size = 20) +
-  xlim(c(0, 0.75)) + ylim(c(0.25, 0.55))
+  xlim(c(0, 2.1)) + ylim(c(0.9, 1.5))
 
 # Distribution of vertex after optimization
 p3 <- ggplot() +
   # True polytope (triangle) boundary
   geom_polygon(
                data  = verts_true_plot,
-               aes(x = q1, y = q2, group = 1),
+               aes(x = w1, y = w2, group = 1),
                fill  = "orange",
                # color = "orange",
                linewidth = 1,
                alpha = 0.5
                ) +
   # Add regression function
-  geom_hline(yintercept = theta_min_true, color = "orange", linetype = "dashed") +
-  # 2D density of estimated vertices across replicates
-  stat_density_2d(
-                  data = verts_opt,
-                  aes(x = f01, y = f02, fill = after_stat(level), group = optimal_index),
-                  geom  = "polygon",
-                  alpha = 0.2,
-                  fill = "steelblue3"
-                  ) +
-  # Black points = mean by optimal_index (your original points)
+  geom_hline(yintercept = theta_min_true / probabilities[2], color = "orange", linetype = "dashed") +
+  # 2D scatter-plot of estimated vertices across replicates
+  geom_point(
+             data = verts_opt,
+             aes(x = w01, y = w02, group = optimal_index),
+             alpha = 0.1,
+             color = "steelblue2"
+             ) +
+  # Black points = mean by optimal_index
   geom_point(
              data = verts_opt %>%
                group_by(optimal_index) %>%
-               summarise(f01 = mean(f01), f02 = mean(f02), .groups = "drop"),
-             aes(f01, f02),
-             size = 1.5
+               summarise(w01 = mean(w01), w02 = mean(w02), .groups = "drop"),
+             aes(w01, w02),
+             size = 3.5
              ) +
   # 10 representative arrows (transparent)
-  geom_segment(
-               data = arrow_df[c(12, 5), ],
-               aes(x = f01, y = f02, xend = xend, yend = yend),
-               arrow = arrow(length = unit(0.12, "cm")),
-               linewidth = 0.4,
-               alpha = 0.25,
-               color = "black"
-               ) +
-  # Average arrow (solid), starting from mean(f01), mean(f02)
+  # geom_segment(
+  #              data = arrow_df,
+  #              aes(x = w01, y = w02, xend = xend, yend = yend),
+  #              arrow = arrow(length = unit(0.12, "cm")),
+  #              linewidth = 0.4,
+  #              alpha = 0.25,
+  #              color = "black"
+  #              ) +
+  # Average arrow (solid), starting from mean(w01), mean(w02)
   geom_segment(
                data = avg_arrow_df,
-               aes(x = f01, y = f02, xend = xend, yend = yend),
-               arrow = arrow(length = unit(0.18, "cm")),
-               linewidth = 0.7,
+               aes(x = w01, y = w02, xend = xend, yend = yend),
+               arrow = arrow(length = unit(0.38, "cm")),
+               linewidth = 1.0,
                color = "black"
                ) +
   coord_fixed() +
   labs(
-       title = TeX(r"(True polytope $Q$ (orange) and distribution of estimated optimal vertices)"),
-       x     = expression(f(1)),
-       y     = expression(f(2))
+       # title = TeX(r"(True polytope $W$ (orange) and distribution of estimated optimal vertices)"),
+       x     = expression(w(1)),
+       y     = expression(w(2))
        ) +
   guides(fill = "none", color = "none") +
   theme_mydefault(base_size = 20) +
-  xlim(c(0, 0.75)) + ylim(c(0.25, 0.55))
+  xlim(c(0, 2.1)) + ylim(c(0.9, 1.5))
 
 # ---- Combine the three plots vertically ----
-p <- (p1 | (p2 / p3)) +
-  plot_layout(heights = c(1, 1), widths = c(1, 2)) +
+p <- (p1 / (p2 | p3)) +
+  plot_layout(heights = c(1, 1), widths = c(1, 1.8)) +
   theme(
         plot.margin = margin(0,0,0,0),
         axis.title.x = element_text(margin = margin(t=0)),
@@ -625,3 +531,12 @@ p <- (p1 | (p2 / p3)) +
   )
 print(p)
 
+# Save the three panels
+ggsave("results/example/A.svg", plot = p1,
+       width = 7.5, height = 10, units = "in")
+ggsave("results/example/B.svg", plot = p2,
+       width = 15, height = 5, units = "in")
+ggsave("results/example/C.svg", plot = p3,
+       width = 15, height = 5, units = "in")
+
+# Save Screenshot

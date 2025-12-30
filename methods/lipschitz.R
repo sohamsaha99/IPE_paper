@@ -167,7 +167,7 @@ true_theta_min_lipschitz <- function(population, L) {
   )
 }
 
-#' Utility function to summarize output from theta computation using Gaussian
+#' Utility function to summarize output from theta computation using Lipschitz
 summarize_theta_lipschitz <- function(result) {
   cat("Minimum: ", result$theta_min, "\n")
   par(mfrow = c(2, 1))
