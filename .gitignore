@@ -11,6 +11,7 @@ renv/
 # Stored data
 *.RDS
 *.rds
+*.csv
 # History files
 .Rhistory
 .Rapp.history
