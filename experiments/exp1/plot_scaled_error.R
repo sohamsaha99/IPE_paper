@@ -11,6 +11,7 @@ suppressPackageStartupMessages({
   library(purrr)
   library(ggpubr)
   library(patchwork)
+  library(svglite)
 })
 
 # ---- helpers ----
@@ -19,10 +20,10 @@ suppressPackageStartupMessages({
 must_exist <- function(path) {
   if (!dir.exists(path)) stop("Directory not found: ", path)
 }
-method_name <- "rkhs"
-L_name <- "L_RKHS"
-estimand_name <- "\\theta_{min}^{(RK)}"
-estimator_name <- "\\hat{\\theta}_{min}^{(RK)}"
+method_name <- "rkhs_log"
+L_name <- "L_RKHS_log"
+estimand_name <- "\\theta_{min}^{(ARK)}"
+estimator_name <- "\\hat{\\theta}_{min}^{(ARK)}"
 # ---- load all results ----
 must_exist("results")
 files <- list.files("results", pattern = "\\.rds$", full.names = TRUE)
@@ -97,8 +98,8 @@ summ1 <- df %>%
                labeller = labeller(scenario = function(x) paste0("Scenario ", x)),
                scales = "free"
                ) +
-    labs(title = TeX(sprintf("Estimand $%s$ and estimator $%s$ as regularization $L$ varies", estimand_name, estimator_name)),
-         x = "Regularization L",
+    # labs(title = TeX(sprintf("Estimand $%s$ and estimator $%s$ as regularization $L$ varies", estimand_name, estimator_name)),
+    labs(x = "Regularization L",
          y = TeX(sprintf("$%s$ and $%s$", estimand_name, estimator_name)),
          # caption = "Each panel: method × scenario. Intervals are empirical quantiles over replicates."
          ) +
@@ -111,6 +112,7 @@ summ1 <- df %>%
           plot.title = element_text(size = 10)
     )
   print(p1)
+  ggsave(paste0("figures/theta_vs_L", method_name, ".svg"), plot = p1, width = 8.5, height = 2.5)
   ggsave("figures/theta_vs_L.pdf", plot = p1, width = 8.5, height = 5.0)
   ggsave("figures/theta_vs_L.png", plot = p1, width = 8.5, height = 5.0, dpi = 200)
 

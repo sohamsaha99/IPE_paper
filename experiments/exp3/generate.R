@@ -5,13 +5,15 @@ library(tidyr)
 library(ggplot2)
 library(latex2exp)
 library(ggpubr)
+library(purrr)
 library(mvtnorm)
 source("myggplot_theme.R")
+source("./experiments/exp3/weighted_rmst.R")
+source("./experiments/exp3/impute_censored.R")
+source("./experiments/exp3/estimate_with_PLD.R")
 
 FILE_PATH <- "./experiments/exp3/GBM_files/GBM_complete.csv"
 df_GBM <- read.csv(FILE_PATH, header = TRUE, stringsAsFactors = FALSE)
-# "healthy" used for resampling
-df_GBM <- df_GBM %>% mutate(healthy = (kps == 1 & eor == "GTR" & age < 55))
 
 ggplot(df_GBM %>%
          mutate(sex = factor(sex),
@@ -24,26 +26,12 @@ ggplot(df_GBM %>%
   theme_pubr(border = TRUE) +
   theme_mydefault(base_size = 20)
 
-df_GBM %>%
-  ggplot(aes(x = healthy, y = event_time, fill = healthy)) +
-  geom_boxplot() +
-  ylim(c(0, 40)) +
-  theme_pubr() +
-  scale_fill_discrete() +
-  labs(y = "Overall Survival (months)",
-       x = "kps > 90, eor = \"GTR\", age < 55") +
-  theme(legend.position = "none") +
-  theme_mydefault(base_size = 20)
-
 # Rescale all predictor columns so that they have mean 0 variance 1
 df_GBM_processed <- df_GBM %>% mutate(isGTR = as.numeric(eor == "GTR")) %>%
-  select(age, sex, kps, mgmt, isGTR, event_time, healthy) %>%
-  rename(Y = event_time) %>%
+  select(age, sex, kps, mgmt, isGTR, os, os_status) %>%
   mutate(across(c(age, sex, kps, mgmt, isGTR),
                 ~ (. - mean(., na.rm = TRUE)) / sd(., na.rm = TRUE)))
 
-# Truncate outcome at 24 months
-df_GBM_processed <- df_GBM_processed %>% mutate(Y = pmin(Y, 24))
 # Check normalization
 df_GBM_processed %>%
   summarise(across(
@@ -54,55 +42,41 @@ df_GBM_processed %>%
     )
   ))
 
-# Define sampling scheme
-generate_data <- function(dat, n0, n1) {
-  # Sampling WITH replacement
-  # Treatment group
-  idx_trt <- sample(nrow(dat), size = n1, replace = TRUE,
-                    # prob = ifelse(dat$healthy, 0.75, 0.75))
-                    prob = rep(1, nrow(dat)))
-  trt <- dat[idx_trt, ] %>% select(age, sex, kps, mgmt, isGTR, Y)
-  # Control group
-  idx_con <- sample(nrow(dat), size = n0, replace = TRUE,
-                    # prob = ifelse(dat$healthy, 0.25, 0.25))
-                    prob = rep(1, nrow(dat)))
-  con <- dat[idx_con, ] %>% select(age, sex, kps, mgmt, isGTR, Y)
-  # Compute summary
-  target <- data.frame(matrix(NA, nrow = 6, ncol = 3))
-  colnames(target) <- c("xname", "value", "type")
-  target$xname <- c("age", "age", "sex", "kps", "mgmt", "isGTR")
-  target$type <- c("first", "second", rep("first", 4))
-  target$value <- c(mean(con$age), mean(con$age^2), mean(con$sex), mean(con$kps), mean(con$mgmt), mean(con$isGTR))
-  control_mean <- mean(con$Y)
-  list(trt = trt, target = target, control_mean = control_mean)
-}
+# Split in treatment and control groups
+set.seed(20260201)
+idx_trt <- sample(x = nrow(df_GBM_processed),
+                  size = floor(0.5 * nrow(df_GBM_processed)),
+                  replace = FALSE)
+df_trt <- df_GBM_processed[idx_trt, ]
+df_con <- df_GBM_processed[-idx_trt, ]
 
-# Find true IPE with Gaussian mixture regularization
-# Create population
-population_trt <- df_GBM_processed %>%
-  # mutate(prob = ifelse(healthy, 0.75, 0.75)) %>%
-  mutate(prob = 1) %>%
-  mutate(prob = prob / sum(prob)) %>%
-  select(age, sex, kps, mgmt, isGTR, Y, prob)
-population_con <- df_GBM_processed %>%
-  # mutate(prob = ifelse(healthy, 0.25, 0.25)) %>%
-  mutate(prob = 1) %>%
-  mutate(prob = prob / sum(prob)) %>%
-  select(age, sex, kps, mgmt, isGTR, Y, prob)
+# Cutoff
+tau <- 24
+
 # Create control population summary
 target_con <- data.frame(matrix(NA, nrow = 6, ncol = 3))
 colnames(target_con) <- c("xname", "value", "type")
 target_con$xname     <- c("age", "age", "sex", "kps", "mgmt", "isGTR")
 target_con$type      <- c("first", "second", rep("first", 4))
-target_con$value <- c(sum(population_con$age   * population_con$prob),
-                      sum(population_con$age^2 * population_con$prob),
-                      sum(population_con$sex   * population_con$prob),
-                      sum(population_con$kps   * population_con$prob),
-                      sum(population_con$mgmt  * population_con$prob),
-                      sum(population_con$isGTR * population_con$prob)
+target_con$value <- c(mean(df_con$age),
+                      mean(df_con$age^2),
+                      mean(df_con$sex),
+                      mean(df_con$kps),
+                      mean(df_con$mgmt),
+                      mean(df_con$isGTR)
 )
-population_con_Y_mean <- sum(population_con$Y * population_con$prob)
-grid_points <- df_GBM_processed %>% select(age, sex, kps, mgmt, isGTR)
+control_rmst <- weighted_rmst(time_var = df_con$os,
+                              event_var = df_con$os_status,
+                              time_cutoff = tau
+)
+control_rmst_alt <- simtrial:::rmst_single_arm(time_var = df_con$os,
+                                               event_var = df_con$os_status,
+                                               tau = tau
+)
+
+# In treatnent group, replace missing event time with E(min{T, tau}|X, Y, delta)
+df_trt_imputed <- impute_censored(df = df_trt, method = "emin_tau", tau = tau)
+
 grid_points <- expand.grid(age   = seq(min(df_GBM_processed$age), max(df_GBM_processed$age), length.out = 50),
                            sex   = unique(df_GBM_processed$sex),
                            kps   = unique(df_GBM_processed$kps),
@@ -111,37 +85,45 @@ grid_points <- expand.grid(age   = seq(min(df_GBM_processed$age), max(df_GBM_pro
 )
 grid_points <- data.frame(grid_points)
 
-# Function for finding true theta_min
-true_theta_min <- function(population_trt, grid_points, L, target_con, population_con_Y_mean) {
+# Function for estimating true theta_min
+estimate_theta_min <- function(df_trt_imputed,
+                               target_con,
+                               control_rmst_value,
+                               grid_points,
+                               L) {
   # Compute dmvnorm
   normal_den <- function(x, v) {
     stopifnot(ncol(x) == length(v))
     dmvnorm(x, mean = v, sigma = diag(length(v)) / (L^2))
   }
   X_cols <- c("age", "sex", "kps", "mgmt", "isGTR")
+  # Y column contains E(min{T, tau}|X, Y, delta)
+  df_trt_imputed$Y <- df_trt_imputed$emin_tau
+  df_trt_imputed$prob <- 1 / nrow(df_trt_imputed)
+  df_trt <- df_trt_imputed
   # Set linear programming:
   # min c^\top alpha
   # subject to A alpha = target_con$value
   K <- nrow(grid_points)
   cvec <- rep(NA, K)
   for (k in seq_len(K)) {
-    cvec[k] <- sum(population_trt$Y * population_trt$prob *
-                   normal_den(population_trt[, X_cols], as.numeric(grid_points[k, ])))
+    cvec[k] <- sum(df_trt$Y * df_trt$prob *
+                   normal_den(df_trt[, X_cols], as.numeric(grid_points[k, ])))
   }
   rhsvec <- c(1, target_con$value)
   dirvec <- rep("==", length(rhsvec))
   Amat <- matrix(NA, nrow = length(rhsvec), ncol = K)
   # Set up each row
   for (k in seq_len(K)) {
-    den_k <- normal_den(population_trt[, X_cols], as.numeric(grid_points[k, ]))
-    stopifnot(length(den_k) == nrow(population_trt))
-    Amat[1, k] <- sum(population_trt$prob  * den_k)
-    Amat[2, k] <- sum(population_trt$age   * population_trt$prob * den_k)
-    Amat[3, k] <- sum(population_trt$age^2 * population_trt$prob * den_k)
-    Amat[4, k] <- sum(population_trt$sex   * population_trt$prob * den_k)
-    Amat[5, k] <- sum(population_trt$kps   * population_trt$prob * den_k)
-    Amat[6, k] <- sum(population_trt$mgmt  * population_trt$prob * den_k)
-    Amat[7, k] <- sum(population_trt$isGTR * population_trt$prob * den_k)
+    den_k <- normal_den(df_trt[, X_cols], as.numeric(grid_points[k, ]))
+    stopifnot(length(den_k) == nrow(df_trt))
+    Amat[1, k] <- sum(df_trt$prob  * den_k)
+    Amat[2, k] <- sum(df_trt$age   * df_trt$prob * den_k)
+    Amat[3, k] <- sum(df_trt$age^2 * df_trt$prob * den_k)
+    Amat[4, k] <- sum(df_trt$sex   * df_trt$prob * den_k)
+    Amat[5, k] <- sum(df_trt$kps   * df_trt$prob * den_k)
+    Amat[6, k] <- sum(df_trt$mgmt  * df_trt$prob * den_k)
+    Amat[7, k] <- sum(df_trt$isGTR * df_trt$prob * den_k)
   }
 
   # Solve linear program
@@ -159,54 +141,70 @@ true_theta_min <- function(population_trt, grid_points, L, target_con, populatio
 
   alpha_hat <- lp_out$solution
   EY1_min <- as.numeric(lp_out$objval)
-  theta_min <- EY1_min - population_con_Y_mean
+  theta_min <- EY1_min - control_rmst_value
 
   list(theta_min = theta_min,
-       alpha = alpha_hat
+       alpha = alpha_hat,
+       L = L
   )
 }
 
-true_theta_max <- function(population_trt, grid_points, L, target_con, population_con_Y_mean) {
-  pop_trt_neg <- population_trt
-  pop_trt_neg$Y <- -pop_trt_neg$Y
+estimate_theta_max <- function(df_trt_imputed,
+                               target_con,
+                               control_rmst_value,
+                               grid_points,
+                               L) {
 
-  ret <- true_theta_min(pop_trt_neg,
-                        grid_points,
-                        L,
-                        target_con,
-                        population_con_Y_mean = -population_con_Y_mean)
+  df2 <- df_trt_imputed
+  df2$emin_tau <- -1.0 * df2$emin_tau
 
-  list(theta_max = -ret$theta_min,
-       alpha = ret$alpha)
+  out <- estimate_theta_min(df_trt_imputed     = df2,
+                            target_con         = target_con,
+                            control_rmst_value = -control_rmst_value,
+                            grid_points        = grid_points,
+                            L                  = L)
+
+  list(theta_max = -out$theta_min,
+       alpha     = out$alpha,
+       L = L
+  )
 }
 
-true_theta_min(population_trt, grid_points, 0.6, target_con, population_con_Y_mean)
-true_theta_max(population_trt, grid_points, 1, target_con, population_con_Y_mean)
+
+
+estimate_theta_min(df_trt_imputed, target_con, control_rmst$rmst[1],
+                   grid_points = grid_points,
+                   L = 1.0
+)
 
 # Plot for range of values of L
 library(ggplot2)
 
 # Grid of L values
-L_seq <- seq(0.5, 2, length.out = 20)
+L_seq <- seq(0.6, 2, length.out = 20)
 
 # Compute theta_min and theta_max
 theta_min <- sapply(L_seq, function(L)
-  true_theta_min(population_trt, grid_points, L, target_con, population_con_Y_mean)$theta_min
+  estimate_theta_min(df_trt_imputed, target_con, control_rmst$rmst[1],
+                     grid_points = grid_points, L = L
+                     )$theta_min
 )
 
 theta_max <- sapply(L_seq, function(L)
-  true_theta_max(population_trt, grid_points, L, target_con, population_con_Y_mean)$theta_max
+  estimate_theta_max(df_trt_imputed, target_con, control_rmst$rmst[1],
+                     grid_points = grid_points, L = L
+                     )$theta_max
 )
 
 # Data frame for plotting
-df <- data.frame(
+result <- data.frame(
   L = L_seq,
   theta_min = theta_min,
   theta_max = theta_max
 )
 
 # Plot
-p1 <- ggplot(df, aes(x = L)) +
+p1 <- ggplot(result, aes(x = L)) +
   geom_ribbon(aes(ymin = theta_min, ymax = theta_max), alpha = 0.3) +
   geom_line(aes(y = theta_min), linetype = "dashed") +
   geom_line(aes(y = theta_max), linetype = "dashed") +
@@ -215,379 +213,138 @@ p1 <- ggplot(df, aes(x = L)) +
        y = expression(theta),
        title = "Usual Summary"
        ) +
-  ylim(c(-4, 4)) +
+  ylim(c(-6, 6)) +
   theme_minimal() +
   theme_mydefault(base_size = 20)
 print(p1)
 
-### Version 2 with more summary
-# Create control population summary
-age_breaks <- c(-Inf, -0.508, 0.085, 0.777, Inf)
-target_con_v2 <- data.frame(matrix(NA, nrow = 9, ncol = 3))
-colnames(target_con_v2) <- c("xname", "value", "type")
-target_con_v2$xname     <- c("age", "age", "sex", "kps", "mgmt", "isGTR", rep("age", 3))
-target_con_v2$type      <- c("first", "second", rep("first", 4 + 3))
-target_con_v2$value <- c(sum(population_con$age   * population_con$prob),
-                         sum(population_con$age^2 * population_con$prob),
-                         sum(population_con$sex   * population_con$prob),
-                         sum(population_con$kps   * population_con$prob),
-                         sum(population_con$mgmt  * population_con$prob),
-                         sum(population_con$isGTR * population_con$prob),
-                         sum((population_con$age > age_breaks[1] & population_con$age <= age_breaks[2]) * population_con$prob),
-                         sum((population_con$age > age_breaks[2] & population_con$age <= age_breaks[3]) * population_con$prob),
-                         sum((population_con$age > age_breaks[3] & population_con$age <= age_breaks[4]) * population_con$prob)
-)
+# Visualize the optimizer weights
+# w_f(x) = sum_k alpha_k * N(x | v_k, I_p / L^2)
+density_ratio_wf <- function(x, alpha, grid_points, L) {
+  # x: numeric vector in R^p
+  # alpha: numeric vector length K
+  # grid_points: data.frame / matrix with K rows, p cols (v_1,...,v_K)
+  # L: positive scalar
 
-# Function for finding true theta_min
-true_theta_min_v2 <- function(population_trt, grid_points, L, target_con, population_con_Y_mean, age_breaks) {
-  # Compute dmvnorm
-  normal_den <- function(x, v) {
-    stopifnot(ncol(x) == length(v))
-    dmvnorm(x, mean = v, sigma = diag(length(v)) / (L^2))
-  }
-  X_cols <- c("age", "sex", "kps", "mgmt", "isGTR")
-  # Set linear programming:
-  # min c^\top alpha
-  # subject to A alpha = target_con$value
-  K <- nrow(grid_points)
-  cvec <- rep(NA, K)
-  for (k in seq_len(K)) {
-    cvec[k] <- sum(population_trt$Y * population_trt$prob *
-                   normal_den(population_trt[, X_cols], as.numeric(grid_points[k, ])))
-  }
-  rhsvec <- c(1, target_con$value)
-  dirvec <- rep("==", length(rhsvec))
-  Amat <- matrix(NA, nrow = length(rhsvec), ncol = K)
-  # Set up each row
-  for (k in seq_len(K)) {
-    den_k <- normal_den(population_trt[, X_cols], as.numeric(grid_points[k, ]))
-    stopifnot(length(den_k) == nrow(population_trt))
-    Amat[1, k] <- sum(population_trt$prob  * den_k)
-    Amat[2, k] <- sum(population_trt$age   * population_trt$prob * den_k)
-    Amat[3, k] <- sum(population_trt$age^2 * population_trt$prob * den_k)
-    Amat[4, k] <- sum(population_trt$sex   * population_trt$prob * den_k)
-    Amat[5, k] <- sum(population_trt$kps   * population_trt$prob * den_k)
-    Amat[6, k] <- sum(population_trt$mgmt  * population_trt$prob * den_k)
-    Amat[7, k] <- sum(population_trt$isGTR * population_trt$prob * den_k)
-    Amat[8, k] <- sum((population_trt$age > age_breaks[1] & population_trt$age <= age_breaks[2]) * population_trt$prob * den_k)
-    Amat[9, k] <- sum((population_trt$age > age_breaks[2] & population_trt$age <= age_breaks[3]) * population_trt$prob * den_k)
-    Amat[10, k] <- sum((population_trt$age > age_breaks[3] & population_trt$age <= age_breaks[4]) * population_trt$prob * den_k)
-  }
+  x <- as.numeric(x)
+  V <- as.matrix(grid_points)
+  alpha <- as.numeric(alpha)
 
-  # Solve linear program
-  # Solve LP: min c^T alpha  s.t. Amat %*% alpha = rhsvec, alpha >= 0
-  lp_out <- lpSolve::lp(direction    = "min",
-                        objective.in = cvec,
-                        const.mat    = Amat,
-                        const.dir    = dirvec,
-                        const.rhs    = rhsvec
-  )
+  p <- length(x)
+  K <- nrow(V)
 
-  if (lp_out$status != 0) {
-    stop("LP did not solve to optimality. lpSolve status code: ", lp_out$status)
-  }
+  stopifnot(ncol(V) == p)
+  stopifnot(length(alpha) == K)
+  stopifnot(is.finite(L), L > 0)
 
-  alpha_hat <- lp_out$solution
-  EY1_min <- as.numeric(lp_out$objval)
-  theta_min <- EY1_min - population_con_Y_mean
+  # Evaluate phi(x; v_k, I_p / L^2) for all k
+  Sigma <- diag(p) / (L^2)
+  dens <- mvtnorm::dmvnorm(V, mean = x, sigma = Sigma)  # length K
 
-  list(theta_min = theta_min,
-       alpha = alpha_hat
-  )
+  sum(alpha * dens)
 }
 
-true_theta_max_v2 <- function(population_trt, grid_points, L, target_con, population_con_Y_mean, age_breaks) {
-  pop_trt_neg <- population_trt
-  pop_trt_neg$Y <- -pop_trt_neg$Y
+L_vals <- c(0.6, 0.8, 1.0, 1.2, 1.4, 1.6)
+age_vec <- seq(from = -4, to = 2.5, length.out = 100)
 
-  ret <- true_theta_min_v2(pop_trt_neg,
-                           grid_points,
-                           L,
-                           target_con,
-                           population_con_Y_mean = -population_con_Y_mean,
-                           age_breaks = age_breaks)
+plot_df <- map_dfr(L_vals, function(L) {
 
-  list(theta_max = -ret$theta_min,
-       alpha = ret$alpha)
-}
+  alpha_vec <- estimate_theta_min(
+    df_trt_imputed,
+    target_con,
+    control_rmst$rmst[1],
+    grid_points = grid_points,
+    L = L
+  )$alpha
 
-# Compute theta_min and theta_max
-theta_min <- sapply(L_seq, function(L)
-  true_theta_min_v2(population_trt, grid_points, L, target_con_v2, population_con_Y_mean, age_breaks)$theta_min
-)
+  density_vec <- map_dbl(age_vec, function(age) {
+    density_ratio_wf(c(age, 0, 0, 0, 0), alpha_vec, grid_points, L)
+  })
 
-theta_max <- sapply(L_seq, function(L)
-  true_theta_max_v2(population_trt, grid_points, L, target_con_v2, population_con_Y_mean, age_breaks)$theta_max
-)
+  tibble(
+    age = age_vec * sd(df_GBM$age) + mean(df_GBM$age),
+    density_ratio = density_vec,
+    L = L
+  )
+})
 
-# Data frame for plotting
-df <- data.frame(
-  L = L_seq,
-  theta_min = theta_min,
-  theta_max = theta_max
-)
-
-# Plot
-p2 <- ggplot(df, aes(x = L)) +
-  geom_ribbon(aes(ymin = theta_min, ymax = theta_max), alpha = 0.3) +
-  geom_line(aes(y = theta_min), linetype = "dashed") +
-  geom_line(aes(y = theta_max), linetype = "dashed") +
+ggplot(plot_df, aes(x = age, y = density_ratio)) +
+  geom_line() +
+  facet_wrap(
+    ~ L,
+    ncol = 3,
+    labeller = labeller(L = function(x) paste0("L=", x))
+  ) +
   labs(
-       x = "L",
-       y = expression(theta),
-       title = "Usual summary + age histogram (4 bins)"
-       ) +
-  ylim(c(-4, 4)) +
+    x = "Age",
+    y = "Density ratio",
+    title = "Density ratio by age for different L"
+  ) +
   theme_minimal() +
   theme_mydefault(base_size = 20)
 
-print(p2)
-
-### Version 3 with more summary
-# Create control population summary
-target_con_v3 <- data.frame(matrix(NA, nrow = 7, ncol = 3))
-colnames(target_con_v3) <- c("xname", "value", "type")
-target_con_v3$xname     <- c("age", "age", "sex", "kps", "mgmt", "isGTR", "kps1isGTR")
-target_con_v3$type      <- c("first", "second", rep("first", 4 + 1))
-target_con_v3$value <- c(sum(population_con$age   * population_con$prob),
-                         sum(population_con$age^2 * population_con$prob),
-                         sum(population_con$sex   * population_con$prob),
-                         sum(population_con$kps   * population_con$prob),
-                         sum(population_con$mgmt  * population_con$prob),
-                         sum(population_con$isGTR * population_con$prob),
-                         sum((population_con$isGTR > 0 & population_con$kps > 0) * population_con$prob)
-)
-
-# Function for finding true theta_min
-true_theta_min_v3 <- function(population_trt, grid_points, L, target_con, population_con_Y_mean) {
-  # Compute dmvnorm
-  normal_den <- function(x, v) {
-    stopifnot(ncol(x) == length(v))
-    dmvnorm(x, mean = v, sigma = diag(length(v)) / (L^2))
-  }
-  X_cols <- c("age", "sex", "kps", "mgmt", "isGTR")
-  # Set linear programming:
-  # min c^\top alpha
-  # subject to A alpha = target_con$value
-  K <- nrow(grid_points)
-  cvec <- rep(NA, K)
-  for (k in seq_len(K)) {
-    cvec[k] <- sum(population_trt$Y * population_trt$prob *
-                   normal_den(population_trt[, X_cols], as.numeric(grid_points[k, ])))
-  }
-  rhsvec <- c(1, target_con$value)
-  dirvec <- rep("==", length(rhsvec))
-  Amat <- matrix(NA, nrow = length(rhsvec), ncol = K)
-  # Set up each row
-  for (k in seq_len(K)) {
-    den_k <- normal_den(population_trt[, X_cols], as.numeric(grid_points[k, ]))
-    stopifnot(length(den_k) == nrow(population_trt))
-    Amat[1, k] <- sum(population_trt$prob  * den_k)
-    Amat[2, k] <- sum(population_trt$age   * population_trt$prob * den_k)
-    Amat[3, k] <- sum(population_trt$age^2 * population_trt$prob * den_k)
-    Amat[4, k] <- sum(population_trt$sex   * population_trt$prob * den_k)
-    Amat[5, k] <- sum(population_trt$kps   * population_trt$prob * den_k)
-    Amat[6, k] <- sum(population_trt$mgmt  * population_trt$prob * den_k)
-    Amat[7, k] <- sum(population_trt$isGTR * population_trt$prob * den_k)
-    Amat[8, k] <- sum((population_trt$isGTR > 0 & population_trt$kps > 0) * population_trt$prob * den_k)
-  }
-
-  # print(cvec)
-  # print(Amat)
-  # print(rhsvec)
-  # Solve linear program
-  # Solve LP: min c^T alpha  s.t. Amat %*% alpha = rhsvec, alpha >= 0
-  lp_out <- lpSolve::lp(direction    = "min",
-                        objective.in = cvec,
-                        const.mat    = Amat,
-                        const.dir    = dirvec,
-                        const.rhs    = rhsvec
-  )
-
-  if (lp_out$status != 0) {
-    stop("LP did not solve to optimality. lpSolve status code: ", lp_out$status)
-  }
-
-  alpha_hat <- lp_out$solution
-  EY1_min <- as.numeric(lp_out$objval)
-  theta_min <- EY1_min - population_con_Y_mean
-
-  list(theta_min = theta_min,
-       alpha = alpha_hat
-  )
+###
+# Generate data with additive treatment effect and run estimation methods
+generate_trt_data <- function(df_trt, theta) {
+  df_trt_spike <- df_trt %>%
+    mutate(os = os + ifelse(os_status == 1, theta, 0))
+  return(df_trt_spike)
 }
 
-true_theta_max_v3 <- function(population_trt, grid_points, L, target_con, population_con_Y_mean) {
-  pop_trt_neg <- population_trt
-  pop_trt_neg$Y <- -pop_trt_neg$Y
-
-  ret <- true_theta_min_v3(pop_trt_neg,
-                           grid_points,
-                           L,
-                           target_con,
-                           population_con_Y_mean = -population_con_Y_mean)
-
-  list(theta_max = -ret$theta_min,
-       alpha = ret$alpha)
+theta_true_vec <- seq(from = 0, to = 9, by = 0.5)
+theta_hat_matching <- rep(NA, length(theta_true_vec))
+lower_int_matching <- rep(NA, length(theta_true_vec))
+upper_int_matching <- rep(NA, length(theta_true_vec))
+theta_min          <- rep(NA, length(theta_true_vec))
+theta_max          <- rep(NA, length(theta_true_vec))
+k <- 0
+for (k in seq_along(theta_true_vec)) {
+  df_trt_spike <- generate_trt_data(df_trt, theta_true_vec[k])
+  # Estimate with matching
+  ret <- estimate_trt_effet_matching(df_trt_spike, df_con, tau)
+  theta_hat_matching[k] <- ret$theta_hat
+  lower_int_matching[k] <- ret$lower
+  upper_int_matching[k] <- ret$upper
+  # Estimate IPE
+  df_trt_imputed <- impute_censored(df = df_trt_spike, method = "emin_tau", tau = tau)
+  theta_min[k] <- estimate_theta_min(df_trt_imputed, target_con, control_rmst$rmst[1],
+                                     grid_points = grid_points,
+                                     L = 1.2
+  )$theta_min
+  theta_max[k] <- estimate_theta_max(df_trt_imputed, target_con, control_rmst$rmst[1],
+                                     grid_points = grid_points,
+                                     L = 1.2
+  )$theta_max
 }
-
-# Compute theta_min and theta_max
-theta_min <- sapply(L_seq, function(L)
-  true_theta_min_v3(population_trt, grid_points, L, target_con_v3, population_con_Y_mean)$theta_min
-)
-
-theta_max <- sapply(L_seq, function(L)
-  true_theta_max_v3(population_trt, grid_points, L, target_con_v3, population_con_Y_mean)$theta_max
-)
-
-# Data frame for plotting
-df <- data.frame(
-  L = L_seq,
-  theta_min = theta_min,
-  theta_max = theta_max
-)
 
 # Plot
-p3 <- ggplot(df, aes(x = L)) +
-  geom_ribbon(aes(ymin = theta_min, ymax = theta_max), alpha = 0.3) +
-  geom_line(aes(y = theta_min), linetype = "dashed") +
-  geom_line(aes(y = theta_max), linetype = "dashed") +
+library(ggplot2)
+
+# Put results into a long data frame (one row per interval type per theta_true)
+plot_df <- data.frame(
+  theta_true = rep(theta_true_vec, times = 2),
+  method     = rep(c("Matching CI", "IPE bounds"), each = length(theta_true_vec)),
+  ymin       = c(lower_int_matching, theta_min),
+  ymax       = c(upper_int_matching, theta_max)
+)
+
+# Optional: if you also want to plot the point estimate for matching
+plot_df_pts <- data.frame(
+  theta_true = theta_true_vec,
+  theta_hat  = theta_hat_matching
+)
+
+ggplot(plot_df, aes(x = theta_true, ymin = ymin, ymax = ymax, color = method)) +
+  geom_linerange(position = position_dodge(width = 0.25), linewidth = 0.9) +
+  # Optional: add matching point estimate (uncomment if desired)
+  geom_point(data = plot_df_pts, aes(x = theta_true, y = theta_hat),
+             inherit.aes = FALSE, shape = 16, size = 2) +
+  geom_hline(yintercept = 0, linetype = "dashed", linewidth = 0.4) +
   labs(
-       x = "L",
-       y = expression(theta),
-       title = "Usual summary + Joint table (kps, eor)"
-       ) +
-  ylim(c(-4, 4)) +
-  theme_minimal() +
-  theme_mydefault(base_size = 20)
+    x = "True treatment effect (months)",
+    y = "Interval",
+    color = NULL
+  ) +
+  theme_minimal(base_size = 12) +
+  theme_mydefault(base_size = 25)
 
-print(p3)
-
-### Version 4 with most summary
-# Create control population summary
-age_breaks <- c(-Inf, -0.508, 0.085, 0.777, Inf)
-target_con_v4 <- data.frame(matrix(NA, nrow = 10, ncol = 3))
-colnames(target_con_v4) <- c("xname", "value", "type")
-target_con_v4$xname     <- c("age", "age", "sex", "kps", "mgmt", "isGTR", rep("age", 3), "kps1isGTR")
-target_con_v4$type      <- c("first", "second", rep("first", 4 + 3 + 1))
-target_con_v4$value <- c(sum(population_con$age   * population_con$prob),
-                         sum(population_con$age^2 * population_con$prob),
-                         sum(population_con$sex   * population_con$prob),
-                         sum(population_con$kps   * population_con$prob),
-                         sum(population_con$mgmt  * population_con$prob),
-                         sum(population_con$isGTR * population_con$prob),
-                         sum((population_con$age > age_breaks[1] & population_con$age <= age_breaks[2]) * population_con$prob),
-                         sum((population_con$age > age_breaks[2] & population_con$age <= age_breaks[3]) * population_con$prob),
-                         sum((population_con$age > age_breaks[3] & population_con$age <= age_breaks[4]) * population_con$prob),
-                         sum((population_con$isGTR > 0 & population_con$kps > 0) * population_con$prob)
-)
-
-# Function for finding true theta_min
-true_theta_min_v4 <- function(population_trt, grid_points, L, target_con, population_con_Y_mean, age_breaks) {
-  # Compute dmvnorm
-  normal_den <- function(x, v) {
-    stopifnot(ncol(x) == length(v))
-    dmvnorm(x, mean = v, sigma = diag(length(v)) / (L^2))
-  }
-  X_cols <- c("age", "sex", "kps", "mgmt", "isGTR")
-  # Set linear programming:
-  # min c^\top alpha
-  # subject to A alpha = target_con$value
-  K <- nrow(grid_points)
-  cvec <- rep(NA, K)
-  for (k in seq_len(K)) {
-    cvec[k] <- sum(population_trt$Y * population_trt$prob *
-                   normal_den(population_trt[, X_cols], as.numeric(grid_points[k, ])))
-  }
-  rhsvec <- c(1, target_con$value)
-  dirvec <- rep("==", length(rhsvec))
-  Amat <- matrix(NA, nrow = length(rhsvec), ncol = K)
-  # Set up each row
-  for (k in seq_len(K)) {
-    den_k <- normal_den(population_trt[, X_cols], as.numeric(grid_points[k, ]))
-    stopifnot(length(den_k) == nrow(population_trt))
-    Amat[1, k] <- sum(population_trt$prob  * den_k)
-    Amat[2, k] <- sum(population_trt$age   * population_trt$prob * den_k)
-    Amat[3, k] <- sum(population_trt$age^2 * population_trt$prob * den_k)
-    Amat[4, k] <- sum(population_trt$sex   * population_trt$prob * den_k)
-    Amat[5, k] <- sum(population_trt$kps   * population_trt$prob * den_k)
-    Amat[6, k] <- sum(population_trt$mgmt  * population_trt$prob * den_k)
-    Amat[7, k] <- sum(population_trt$isGTR * population_trt$prob * den_k)
-    Amat[8, k] <- sum((population_trt$age > age_breaks[1] & population_trt$age <= age_breaks[2]) * population_trt$prob * den_k)
-    Amat[9, k] <- sum((population_trt$age > age_breaks[2] & population_trt$age <= age_breaks[3]) * population_trt$prob * den_k)
-    Amat[10, k] <- sum((population_trt$age > age_breaks[3] & population_trt$age <= age_breaks[4]) * population_trt$prob * den_k)
-    Amat[11, k] <- sum((population_trt$isGTR > 0 & population_trt$kps > 0) * population_trt$prob * den_k)
-  }
-
-  # Solve linear program
-  # Solve LP: min c^T alpha  s.t. Amat %*% alpha = rhsvec, alpha >= 0
-  lp_out <- lpSolve::lp(direction    = "min",
-                        objective.in = cvec,
-                        const.mat    = Amat,
-                        const.dir    = dirvec,
-                        const.rhs    = rhsvec
-  )
-
-  if (lp_out$status != 0) {
-    stop("LP did not solve to optimality. lpSolve status code: ", lp_out$status)
-  }
-
-  alpha_hat <- lp_out$solution
-  EY1_min <- as.numeric(lp_out$objval)
-  theta_min <- EY1_min - population_con_Y_mean
-
-  list(theta_min = theta_min,
-       alpha = alpha_hat
-  )
-}
-
-true_theta_max_v4 <- function(population_trt, grid_points, L, target_con, population_con_Y_mean, age_breaks) {
-  pop_trt_neg <- population_trt
-  pop_trt_neg$Y <- -pop_trt_neg$Y
-
-  ret <- true_theta_min_v4(pop_trt_neg,
-                           grid_points,
-                           L,
-                           target_con,
-                           population_con_Y_mean = -population_con_Y_mean,
-                           age_breaks = age_breaks)
-
-  list(theta_max = -ret$theta_min,
-       alpha = ret$alpha)
-}
-
-# Compute theta_min and theta_max
-theta_min <- sapply(L_seq, function(L)
-  true_theta_min_v4(population_trt, grid_points, L, target_con_v4, population_con_Y_mean, age_breaks)$theta_min
-)
-
-theta_max <- sapply(L_seq, function(L)
-  true_theta_max_v4(population_trt, grid_points, L, target_con_v4, population_con_Y_mean, age_breaks)$theta_max
-)
-
-# Data frame for plotting
-df <- data.frame(
-  L = L_seq,
-  theta_min = theta_min,
-  theta_max = theta_max
-)
-
-# Plot
-p4 <- ggplot(df, aes(x = L)) +
-  geom_ribbon(aes(ymin = theta_min, ymax = theta_max), alpha = 0.3) +
-  geom_line(aes(y = theta_min), linetype = "dashed") +
-  geom_line(aes(y = theta_max), linetype = "dashed") +
-  labs(
-       x = "L",
-       y = expression(theta),
-       title = "Usual summary + Joint table + age histogram"
-       ) +
-  ylim(c(-4, 4)) +
-  theme_minimal() +
-  theme_mydefault(base_size = 20)
-
-print(p4)
-
-# Make one grid:
-library(patchwork)
-p1 + p2 + p3 + p4

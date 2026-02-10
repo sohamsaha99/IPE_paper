@@ -12,7 +12,7 @@ df_GBM <- read.csv("./experiments/exp3/GBM_files/AVAGLIO_CleanRR.csv", header = 
 # Only keep necessary columns
 df_GBM <- df_GBM %>%
   select(Patient, age, sex, kps90_100, eor, mgmt, os_status, os, pfs) %>%
-  rename(kps = kps90_100) %>% # Binary: 0: 0-90, 1: 90-100
+  rename(kps = kps90_100) %>% # Binary: 0: 0-80, 1: 90-100
   filter(eor %in% c("GTR", "STR")) %>%
   mutate(eor = factor(eor)) %>% # Levels: BX, GTR, STR
   mutate(os = os / 30, pfs = pfs / 30) # Measure `os` in months instead of days
@@ -61,7 +61,7 @@ add_event_time_conditional <- function(df, method = c("simulate","median"), seed
   df
 }
 
-df_complete <- add_event_time_conditional(df_GBM, method = "simulate", seed = 20260128)
+df_complete <- add_event_time_conditional(df_GBM, method = "median", seed = 20260128)
 
 df_complete %>% write.csv(file = "./experiments/exp3/GBM_files/GBM_complete.csv", row.names = FALSE)
 
