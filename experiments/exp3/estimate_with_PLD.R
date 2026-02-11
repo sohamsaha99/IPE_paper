@@ -25,7 +25,7 @@ library(survRM2)
 #
 
 # Function for finding RMST difference after matching
-estimate_trt_effet_matching <- function(df_trt, df_con, tau) {
+estimate_trt_effect_matching <- function(df_trt, df_con, tau) {
   df_trt$treat <- 1
   df_con$treat <- 0
 
@@ -61,4 +61,4 @@ estimate_trt_effet_matching <- function(df_trt, df_con, tau) {
        pvalue = pvalue
   )
 }
-# estimate_trt_effet_matching(df_trt, df_con, 24)
+# estimate_trt_effect_matching(df_trt, df_con, 24)
