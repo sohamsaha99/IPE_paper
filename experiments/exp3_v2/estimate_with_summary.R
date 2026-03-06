@@ -18,44 +18,17 @@ estimate_IPE <- function(df,
                          tau,
                          grid_points,
                          L) {
-  # Normalize columns and adjust target accordingly
+  # Do not normalize columns, instead set Sigma matrix for Gaussian
   X_cols <- c("age", "sex", "kps", "mgmt", "isGTR")
-  # Store the original moments
-  original_moments <- target_con
-  for (x in X_cols) {
-    m <- mean(df[, x])
-    s <- sd(df[, x])
-    df[, x] <- (df[, x] - m) / s
-    # t1, t2 might be empty, but not a problem, checked later
-    t1 <- original_moments %>% filter(xname == x, type == 1) %>% pull(value)
-    t2 <- original_moments %>% filter(xname == x, type == 2) %>% pull(value)
-    # Adjust target
-    for (i in seq_len(nrow(target_con))) {
-      if (target_con[i, "xname"] != x) next
-      if (target_con[i, "type"] == 1) {
-        # only update if an original t1 exists (and is unique)
-        if (length(t1) == 1) {
-          target_con[i, "value"] <- (original_moments[i, "value"] - m) / s
-        } else {
-          stop("t1 is problematic. Check.")
-        }
-      } else if (target_con[i, "type"] == 2) {
-        # need t1 to transform E[X^2] -> E[Z^2]
-        if (length(t2) == 1 && length(t1) == 1) {
-          target_con[i, "value"] <- (original_moments[i, "value"] - 2 * m * t1 + m * m) / (s ^ 2)
-        } else {
-          stop("t1 or t2 problematic. Check.")
-        }
-      }
-    }
-  }
+  var_X <- diag(var(df[, X_cols]))
+  Sigma <- diag(var_X)
   # Now we have target_con and df normalized
   # Impute censored patients, stored in column emin_tau
   df_trt_imputed <- impute_censored(df = df, method = "emin_tau", tau = tau)
   # Compute dmvnorm
-  normal_den <- function(x, v) {
+  normal_den <- function(x, v, sigma = Sigma) {
     stopifnot(ncol(x) == length(v))
-    dmvnorm(x, mean = v, sigma = diag(length(v)) / (L^2))
+    dmvnorm(x, mean = v, sigma = sigma / (L^2))
   }
   # Y column contains E(min{T, tau}|X, Y, delta)
   df_trt_imputed$Y <- df_trt_imputed$emin_tau
@@ -112,7 +85,8 @@ estimate_IPE <- function(df,
     wts_min[i] <- density_ratio_wf(x = as.numeric(df_trt[i, X_cols]),
                                    alpha = alpha_min,
                                    grid_points = grid_points,
-                                   L = L
+                                   L = L,
+                                   Sigma = Sigma
     )
   }
 
@@ -137,13 +111,14 @@ estimate_IPE <- function(df,
     wts_max[i] <- density_ratio_wf(x = as.numeric(df_trt[i, X_cols]),
                                    alpha = alpha_max,
                                    grid_points = grid_points,
-                                   L = L
+                                   L = L,
+                                   Sigma = Sigma
     )
   }
 
   list(
        theta_min   = theta_min,
-       alpha_min   = alpha_hat,
+       alpha_min   = alpha_min,
        wts_min     = wts_min,
        theta_max   = theta_max,
        alpha_max   = alpha_max,
@@ -151,13 +126,14 @@ estimate_IPE <- function(df,
        prob        = df_trt$prob,
        grid_points = grid_points,
        L           = L,
+       Sigma       = Sigma,
        tau         = tau
   )
 }
 
 # Visualize the optimizer weights
 # w_f(x) = sum_k alpha_k * N(x | v_k, I_p / L^2)
-density_ratio_wf <- function(x, alpha, grid_points, L) {
+density_ratio_wf <- function(x, alpha, grid_points, L, Sigma) {
   # x: numeric vector in R^p
   # alpha: numeric vector length K
   # grid_points: data.frame / matrix with K rows, p cols (v_1,...,v_K)
@@ -175,7 +151,7 @@ density_ratio_wf <- function(x, alpha, grid_points, L) {
   stopifnot(is.finite(L), L > 0)
 
   # Evaluate phi(x; v_k, I_p / L^2) for all k
-  Sigma <- diag(p) / (L^2)
+  Sigma <- Sigma / (L^2)
   dens <- mvtnorm::dmvnorm(V, mean = x, sigma = Sigma)  # length K
 
   sum(alpha * dens)
