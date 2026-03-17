@@ -140,6 +140,103 @@ find_f0min <- function(h, categorized1, categorized2) {
   result <- solve_lp(h, categorized1, categorized2)
   result$wts_min * result$prop
 }
+
+run_one_replicate <- function(n1, n1A, n1B, n_splits, sample_space) {
+  ## 1) Generate full data of size n1
+  trt <- get_data(n1)
+  # Only used to compute a representative derivative
+  # Not used in estimation
+  summ_deriv <- get_data(n1) %>%
+    group_by(X) %>%
+    summarise(
+              mean_y    = mean(Y),
+              proportion = n() / n1,
+              .groups = "drop"
+    )
+
+  ## Summarize full data
+  summ_trt <- trt %>%
+    group_by(X) %>%
+    summarise(
+              mean_y    = mean(Y),
+              proportion = n() / n1,
+              .groups = "drop"
+    )
+
+  ## 2) theta_min_hat from full data
+  result <- solve_lp(0, summ_trt, summ_trt)
+
+  ## 3) Multiple random A/B splits for CV estimators
+  theta_cv_splits  <- numeric(n_splits)
+  theta_cv2_splits <- numeric(n_splits)
+
+  for (s in seq_len(n_splits)) {
+    idx_A <- sample(seq_len(n1), n1A)
+    idx_B <- setdiff(seq_len(n1), idx_A)
+
+    trt_A <- trt[idx_A, ]
+    trt_B <- trt[idx_B, ]
+
+    summ_trt_A <- trt_A %>%
+      group_by(X) %>%
+      summarise(
+                mean_y    = mean(Y),
+                proportion = n() / n1A,
+                .groups = "drop"
+                ) %>%
+      complete(X = sample_space,
+               fill = list(mean_y = 0, proportion = 0))
+
+    summ_trt_B <- trt_B %>%
+      group_by(X) %>%
+      summarise(
+                mean_y    = mean(Y),
+                proportion = n() / n1B,
+                .groups = "drop"
+                ) %>%
+      complete(X = sample_space,
+               fill = list(mean_y = 0, proportion = 0))
+
+    # Plug-in weights: fit on A, evaluate on B
+    result_A           <- solve_lp(0, summ_trt_A, summ_trt_A)
+    # Data-splitting basic (without derivative)
+    theta_cv_splits[s] <- sum(result_A$wts_min *
+                              summ_trt_B$proportion *
+                              summ_trt_B$mean_y)
+
+    # Derivative based on hybrid population
+    derivative <- grad(
+                       find_theta_cross, 0,
+                       method = "Richardson", side = +1,
+                       categorized1 = summ_trt_A, categorized2 = summ_trt_B
+    )
+    # Data-splitting and derivative correction
+    theta_cv2_splits[s] <- theta_cv_splits[s] + derivative
+  }
+
+  list(
+       theta_min_hat = result$theta_min,
+       theta_min_hat_cv = mean(theta_cv_splits),
+       theta_min_hat_cv2 = mean(theta_cv2_splits),
+       optimal_index_hat = result$optimal_index,
+       w0_min_hat = as.numeric(result$wts_min),
+       w0_min_dif = as.numeric(
+         jacobian(
+                  find_wts, 0,
+                  method = "Richardson", side = +1,
+                  categorized1 = summ_trt, categorized2 = summ_deriv
+         )
+       ),
+       f0_min_hat = as.numeric(result$prop * result$wts_min),
+       f0_min_dif = as.numeric(
+         jacobian(
+                  find_f0min, 0,
+                  method = "Richardson", side = +1,
+                  categorized1 = summ_trt, categorized2 = summ_deriv
+         )
+       )
+  )
+}
 ##### PART 2 #####
 # Compare estimators
 
@@ -149,10 +246,15 @@ results_list <- list()
 k <- 0
 
 n_splits <- 10  # <-- number of random splits per bootstrap replicate
+detected_cores <- parallel::detectCores(logical = FALSE)
+if (is.na(detected_cores)) {
+  detected_cores <- 1L
+}
+n_cores <- max(1L, detected_cores - 1L)
 
-B <- 1600
+B <- 1600 * 16
 print(Sys.time())
-for (n1 in c(50, 100, 200, 400, 800, 1600, 3200)) {
+for (n1 in c(50, 100, 200, 400)) {
 # for (n1 in c(25)) {
 
   theta_min_hat     <- rep(NA, B)
@@ -167,102 +269,23 @@ for (n1 in c(50, 100, 200, 400, 800, 1600, 3200)) {
   n1A <- round(n1 / 2)
   n1B <- n1 - n1A
 
-  for (b in seq_len(B)) {
-    ## 1) Generate full data of size n1
-    trt <- get_data(n1)
-    # Only used to compute a representative derivative
-    # Not used in estimation
-    summ_deriv <- get_data(n1) %>%
-      group_by(X) %>%
-      summarise(
-                mean_y    = mean(Y),
-                proportion = n() / n1,
-                .groups = "drop"
-      )
+  replicate_results <- parallel::mclapply(
+                                         X = seq_len(B),
+                                         FUN = function(b) {
+                                           run_one_replicate(n1, n1A, n1B, n_splits, sample_space)
+                                         },
+                                         mc.cores = n_cores,
+                                         mc.set.seed = TRUE
+  )
 
-    ## Summarize full data
-    summ_trt <- trt %>%
-      group_by(X) %>%
-      summarise(
-                mean_y    = mean(Y),
-                proportion = n() / n1,
-                .groups = "drop"
-      )
-
-      ## 2) theta_min_hat from full data
-      result                 <- solve_lp(0, summ_trt, summ_trt)
-      # Empirical Estimate
-      theta_min_hat[b]       <- result$theta_min
-      optimal_index_hat[b]   <- result$optimal_index
-      w0_min_hat[b, ]        <- result$wts_min
-      f0_min_hat[b, ]        <- result$prop * result$wts_min
-      # Compute a representative derivative of w
-      w0_min_dif[b, ]        <- jacobian(
-                                  find_wts, 0,
-                                  method = "Richardson", side = +1,
-                                  categorized1 = summ_trt, categorized2 = summ_deriv
-                                  # categorized1 = summ_trt, categorized2 = population
-      )
-      # Compute a representative derivative of f0_min
-      f0_min_dif[b, ]        <- jacobian(
-                                  find_f0min, 0,
-                                  method = "Richardson", side = +1,
-                                  categorized1 = summ_trt, categorized2 = summ_deriv
-                                  # categorized1 = summ_trt, categorized2 = population
-      )
-
-      ## 3) Multiple random A/B splits for CV estimators
-      theta_cv_splits  <- numeric(n_splits)
-      theta_cv2_splits <- numeric(n_splits)
-
-      for (s in seq_len(n_splits)) {
-        # random split indices
-        idx_A <- sample(seq_len(n1), n1A)
-        idx_B <- setdiff(seq_len(n1), idx_A)
-
-        trt_A <- trt[idx_A, ]
-        trt_B <- trt[idx_B, ]
-
-        summ_trt_A <- trt_A %>%
-          group_by(X) %>%
-          summarise(
-                    mean_y    = mean(Y),
-                    proportion = n() / n1A,
-                    .groups = "drop"
-                    ) %>%
-          complete(X = sample_space,
-                   fill = list(mean_y = 0, proportion = 0))
-
-          summ_trt_B <- trt_B %>%
-            group_by(X) %>%
-            summarise(
-                      mean_y    = mean(Y),
-                      proportion = n() / n1B,
-                      .groups = "drop"
-                      ) %>%
-            complete(X = sample_space,
-                     fill = list(mean_y = 0, proportion = 0))
-            # Plug-in weights: fit on A, evaluate on B
-            result_A            <- solve_lp(0, summ_trt_A, summ_trt_A)
-            # Data-splitting basic (without derivative)
-            theta_cv_splits[s]  <- sum(result_A$wts_min *
-                                       summ_trt_B$proportion *
-                                       summ_trt_B$mean_y)
-
-            # Derivative based on hybrid population
-            derivative          <- grad(
-                                        find_theta_cross, 0,
-                                        method = "Richardson", side = +1,
-                                        categorized1 = summ_trt_A, categorized2 = summ_trt_B
-            )
-            # Data-splitting and derivative correction
-            theta_cv2_splits[s] <- theta_cv_splits[s] + derivative
-      }
-
-      ## Store averages over splits
-      theta_min_hat_cv[b]  <- mean(theta_cv_splits)
-      theta_min_hat_cv2[b] <- mean(theta_cv2_splits)
-  }
+  theta_min_hat     <- vapply(replicate_results, `[[`, numeric(1), "theta_min_hat")
+  theta_min_hat_cv  <- vapply(replicate_results, `[[`, numeric(1), "theta_min_hat_cv")
+  theta_min_hat_cv2 <- vapply(replicate_results, `[[`, numeric(1), "theta_min_hat_cv2")
+  optimal_index_hat <- vapply(replicate_results, `[[`, numeric(1), "optimal_index_hat")
+  w0_min_hat        <- do.call(rbind, lapply(replicate_results, `[[`, "w0_min_hat"))
+  w0_min_dif        <- do.call(rbind, lapply(replicate_results, `[[`, "w0_min_dif"))
+  f0_min_hat        <- do.call(rbind, lapply(replicate_results, `[[`, "f0_min_hat"))
+  f0_min_dif        <- do.call(rbind, lapply(replicate_results, `[[`, "f0_min_dif"))
 
   # Put weights + optimal index into a data frame
   wts_df <- data.frame(
@@ -727,3 +750,4 @@ ggsave("results/example/v5/E.svg", plot = p5,
        width = 15, height = 5, units = "in")
 
 # Save Screenshot
+
